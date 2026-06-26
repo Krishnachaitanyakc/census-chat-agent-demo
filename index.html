@@ -216,10 +216,10 @@
         <aside>
           <div>
             <h1>Census Chat Agent</h1>
-            <p class="muted">Public fallback demo for US population and demographic questions.</p>
+            <p class="muted">Public fallback demo for US population questions and selected demographic measures.</p>
           </div>
           <div class="status">
-            <span>Data: ACS 2022 state-level fixture</span>
+            <span>Data: Census 2023 state population plus ACS fixture demographics</span>
             <span>Guardrails: active</span>
             <span>Context: recent-turn memory</span>
           </div>
@@ -253,13 +253,73 @@
         hispanic_population: { label: "Hispanic or Latino population", unit: "count", aliases: ["hispanic", "latino", "latina"] }
       };
 
-      const data = {
-        "united states": { total_population: 333287557, median_age: 38.9, median_household_income: 74755, per_capita_income: 41104, poverty_rate: 12.5, white_population: 204277273, black_population: 41078951, asian_population: 19886228, hispanic_population: 63664273 },
-        "california": { total_population: 39029342, median_age: 37.3, median_household_income: 91551, per_capita_income: 46661, poverty_rate: 12.2, white_population: 16160485, black_population: 2176594, asian_population: 6172319, hispanic_population: 15683121 },
-        "texas": { total_population: 30029572, median_age: 35.5, median_household_income: 72584, per_capita_income: 37514, poverty_rate: 14.0, white_population: 14817023, black_population: 3694669, asian_population: 1656441, hispanic_population: 12068166 },
-        "florida": { total_population: 22244823, median_age: 42.7, median_household_income: 67474, per_capita_income: 39218, poverty_rate: 12.7, white_population: 14067427, black_population: 3531056, asian_population: 679451, hispanic_population: 6007296 },
-        "new york": { total_population: 19677151, median_age: 39.8, median_household_income: 79291, per_capita_income: 47437, poverty_rate: 13.9, white_population: 12130422, black_population: 2816840, asian_population: 1752235, hispanic_population: 3771720 }
+      const populationData = {
+        "united states": { total_population: 334914895 },
+        "alabama": { total_population: 5108468 },
+        "alaska": { total_population: 733406 },
+        "arizona": { total_population: 7431344 },
+        "arkansas": { total_population: 3067732 },
+        "california": { total_population: 38965193 },
+        "colorado": { total_population: 5877610 },
+        "connecticut": { total_population: 3617176 },
+        "delaware": { total_population: 1031890 },
+        "district of columbia": { total_population: 678972 },
+        "florida": { total_population: 22610726 },
+        "georgia": { total_population: 11029227 },
+        "hawaii": { total_population: 1435138 },
+        "idaho": { total_population: 1964726 },
+        "illinois": { total_population: 12549689 },
+        "indiana": { total_population: 6862199 },
+        "iowa": { total_population: 3207004 },
+        "kansas": { total_population: 2940546 },
+        "kentucky": { total_population: 4526154 },
+        "louisiana": { total_population: 4573749 },
+        "maine": { total_population: 1395722 },
+        "maryland": { total_population: 6180253 },
+        "massachusetts": { total_population: 7001399 },
+        "michigan": { total_population: 10037261 },
+        "minnesota": { total_population: 5737915 },
+        "mississippi": { total_population: 2939690 },
+        "missouri": { total_population: 6196156 },
+        "montana": { total_population: 1132812 },
+        "nebraska": { total_population: 1978379 },
+        "nevada": { total_population: 3194176 },
+        "new hampshire": { total_population: 1402054 },
+        "new jersey": { total_population: 9290841 },
+        "new mexico": { total_population: 2114371 },
+        "new york": { total_population: 19571216 },
+        "north carolina": { total_population: 10835491 },
+        "north dakota": { total_population: 783926 },
+        "ohio": { total_population: 11785935 },
+        "oklahoma": { total_population: 4053824 },
+        "oregon": { total_population: 4233358 },
+        "pennsylvania": { total_population: 12961683 },
+        "rhode island": { total_population: 1095962 },
+        "south carolina": { total_population: 5373555 },
+        "south dakota": { total_population: 919318 },
+        "tennessee": { total_population: 7126489 },
+        "texas": { total_population: 30503301 },
+        "utah": { total_population: 3417734 },
+        "vermont": { total_population: 647464 },
+        "virginia": { total_population: 8715698 },
+        "washington": { total_population: 7812880 },
+        "west virginia": { total_population: 1770071 },
+        "wisconsin": { total_population: 5910955 },
+        "wyoming": { total_population: 584057 },
+        "puerto rico": { total_population: 3205691 }
       };
+
+      const demographicData = {
+        "united states": { median_age: 38.9, median_household_income: 74755, per_capita_income: 41104, poverty_rate: 12.5, white_population: 204277273, black_population: 41078951, asian_population: 19886228, hispanic_population: 63664273 },
+        "california": { median_age: 37.3, median_household_income: 91551, per_capita_income: 46661, poverty_rate: 12.2, white_population: 16160485, black_population: 2176594, asian_population: 6172319, hispanic_population: 15683121 },
+        "texas": { median_age: 35.5, median_household_income: 72584, per_capita_income: 37514, poverty_rate: 14.0, white_population: 14817023, black_population: 3694669, asian_population: 1656441, hispanic_population: 12068166 },
+        "florida": { median_age: 42.7, median_household_income: 67474, per_capita_income: 39218, poverty_rate: 12.7, white_population: 14067427, black_population: 3531056, asian_population: 679451, hispanic_population: 6007296 },
+        "new york": { median_age: 39.8, median_household_income: 79291, per_capita_income: 47437, poverty_rate: 13.9, white_population: 12130422, black_population: 2816840, asian_population: 1752235, hispanic_population: 3771720 }
+      };
+
+      const data = Object.fromEntries(
+        Object.entries(populationData).map(([name, values]) => [name, { ...values, ...(demographicData[name] || {}) }])
+      );
 
       const starters = [
         "What is the population of California?",
@@ -331,18 +391,23 @@
         if (isRank || isBottom) {
           const rows = Object.entries(data)
             .filter(([name]) => name !== "united states")
+            .filter(([, values]) => values[metric] !== undefined)
             .sort((a, b) => (isBottom ? a[1][metric] - b[1][metric] : b[1][metric] - a[1][metric]))
             .slice(0, 5)
             .map(([name, values], index) => `${index + 1}. ${title(name)}: ${format(values[metric], metricInfo.unit)}`);
-          return `${metricInfo.label}, ranked by available state fixture data:\n${rows.join("\n")}\n\nNote: This public fallback demo uses a small ACS 2022 state-level fixture. The private repo contains the full Next.js app and provider boundary for live Census/Snowflake deployment.`;
+          return `${metricInfo.label}, ranked by the available public fallback dataset:\n${rows.join("\n")}\n\nNote: Population rankings use the Census Bureau 2023 state population estimates CSV. Selected non-population metrics use a small ACS 2022 fixture. The private repo contains the full Next.js app and provider boundary for live Census/Snowflake deployment.`;
         }
 
         if (geographies.length === 0) {
-          return "Which geography should I look up? This public fallback demo supports United States, California, Texas, Florida, and New York.";
+          return "Which geography should I look up? This public fallback demo supports United States, every state, DC, and Puerto Rico for population; selected ACS demographic measures are available for a smaller fixture set.";
         }
 
-        const rows = geographies.map((name) => `${title(name)}: ${metricInfo.label}: ${format(data[name][metric], metricInfo.unit)}.`);
-        return `${rows.join("\n")}\n\nSource: ACS 2022 values mirrored into the public fallback fixture. The production app is designed to use live Census API or Snowflake credentials.`;
+        const rows = geographies.map((name) => {
+          const value = data[name][metric];
+          if (value === undefined) return `${title(name)}: ${metricInfo.label} is not available in the public fallback dataset.`;
+          return `${title(name)}: ${metricInfo.label}: ${format(value, metricInfo.unit)}.`;
+        });
+        return `${rows.join("\n")}\n\nSource: Census Bureau 2023 state population estimates for total population; selected non-population values come from the ACS 2022 fallback fixture. The production app is designed to use live Census API or Snowflake credentials.`;
       }
 
       function render() {
