@@ -1,7 +1,15 @@
-# Census Chat Agent Public Demo
+# Census Chat Agent — public demo
 
-Static fallback demo for the private `census-chat-agent` submission repository.
+Live: https://krishnachaitanyakc.github.io/census-chat-agent-demo/
 
-The canonical implementation is the private Next.js repository shared with the requested reviewers. This public repo exists only to provide a web-accessible demo URL when hosted Next.js credentials are unavailable.
+Static, client-side demo that runs the **real** agent logic (guardrails, planner,
+conversation context — bundled from the source repo) against a census sample
+(US + California, Texas, Florida, New York). It shows the interaction model,
+guardrails (off-topic / unsafe / prompt-injection), multi-turn follow-ups,
+unsupported-metric clarification, and graceful degradation.
 
-The demo uses Census Bureau 2023 state population estimates for all states, DC, Puerto Rico, and the United States. Selected non-population measures use a smaller ACS 2022 fallback fixture.
+The full server application — LLM-based natural-language planning, the Snowflake
+SafeGraph dataset, the live US Census API, structured logging, and rate limiting —
+is in the main private repository and deploys to Vercel/Render.
+
+`app.js` is generated from `web/main.ts` in the main repo via esbuild.
