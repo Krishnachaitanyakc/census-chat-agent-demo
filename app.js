@@ -313,6 +313,15 @@
     { name: "Wyoming", abbr: "WY", fips: "56" },
     { name: "Puerto Rico", abbr: "PR", fips: "72" }
   ];
+  var NEGATION_CUE = "(?:not|instead of|rather than|but not|anything but|except|excluding|don't want|dont want|forget|skip)";
+  function stripNegatedStates(text) {
+    let out = text;
+    for (const state of STATES) {
+      const re = new RegExp(`\\b${NEGATION_CUE}\\s+(?:the\\s+)?${escapeRegExp(state.name)}\\b`, "gi");
+      out = out.replace(re, " ");
+    }
+    return out;
+  }
   function findState(input) {
     if (!input) return void 0;
     const normalized = normalize(input);
@@ -377,20 +386,27 @@
   var MAX_SUPPORTED_YEAR = 2022;
   function planQuery(messages) {
     const current = messages.at(-1)?.content ?? "";
-    const context = userTurns(messages).map((message) => message.content).join("\n");
-    const requestedYear = detectYear(current);
-    if (requestedYear !== void 0) {
-      if (requestedYear > MAX_SUPPORTED_YEAR) {
-        return {
-          clarification: `I report measured US Census/ACS estimates (through ${MAX_SUPPORTED_YEAR}); I can't project future years like ${requestedYear}.`
-        };
-      }
-      if (requestedYear < MIN_SUPPORTED_YEAR) {
-        return {
-          clarification: `I have ACS 5-year estimates from ${MIN_SUPPORTED_YEAR} to ${MAX_SUPPORTED_YEAR}; I don't have data for ${requestedYear}.`
-        };
-      }
+    const pendingCounty = pendingAmbiguousCounty(messages);
+    const slotFillState = pendingCounty ? bareStateAnswer(current) : void 0;
+    if (isSmalltalk(current) && !slotFillState) {
+      return {
+        clarification: 'Hi! I answer questions about US population and demographics from the Census. Try "What is the population of California?", "Compare Texas and Florida by median age", or "Which states have the largest populations?"'
+      };
     }
+    const years = detectYears(current);
+    const futureYear = years.find((year) => year > MAX_SUPPORTED_YEAR);
+    if (futureYear !== void 0) {
+      return {
+        clarification: `I report measured US Census/ACS estimates (through ${MAX_SUPPORTED_YEAR}); I can't project future years like ${futureYear}.`
+      };
+    }
+    const oldYear = years.find((year) => year < MIN_SUPPORTED_YEAR);
+    if (oldYear !== void 0) {
+      return {
+        clarification: `I have ACS 5-year estimates from ${MIN_SUPPORTED_YEAR} to ${MAX_SUPPORTED_YEAR}; I don't have data for ${oldYear}.`
+      };
+    }
+    const requestedYear = years.find((year) => year >= MIN_SUPPORTED_YEAR && year <= MAX_SUPPORTED_YEAR);
     if (/\b(projected|projection|projections|forecast|forecasted|next decade|coming decade|future population|in the future|decades? from now|years from now)\b/i.test(current)) {
       return {
         clarification: `I report measured US Census/ACS estimates (through ${MAX_SUPPORTED_YEAR}); I can't project future population values.`
@@ -403,18 +419,16 @@
     }
     const currentMetrics = detectMetrics(current);
     const onlyGenericMetric = currentMetrics.length > 0 && currentMetrics.every((metric) => metric === "total_population" || metric === "median_age");
-    const unsupported = unsupportedConcept(current);
-    if (currentMetrics.length === 0 || onlyGenericMetric) {
-      if (unsupported) {
-        return {
-          clarification: `I can report population (total, by sex, and by race/Hispanic origin), median age, median household income, per-capita income, and poverty rate \u2014 but not ${unsupported}. Which of those would help?`
-        };
-      }
-      if (mentionsIncome(current)) {
-        return {
-          clarification: "Which income measure would you like \u2014 median household income or per capita income?"
-        };
-      }
+    const unsupported = unsupportedConcept(current, currentMetrics.length === 0);
+    if ((currentMetrics.length === 0 || onlyGenericMetric) && unsupported) {
+      return {
+        clarification: `I can report population (total, by sex, and by race/Hispanic origin), median age, median household income, per-capita income, and poverty rate \u2014 but not ${unsupported}. Which of those would help?`
+      };
+    }
+    if (mentionsIncome(current)) {
+      return {
+        clarification: "Which income measure would you like \u2014 median household income or per capita income?"
+      };
     }
     const COUNT_ONLY_METRICS = [
       "total_population",
@@ -430,7 +444,7 @@
         clarification: "I report population as counts, not percentages, for sex and race (poverty rate is the only percentage I have). I can give you the counts and the total \u2014 would that work?"
       };
     }
-    const previousMetrics = detectMetrics(context);
+    const previousMetrics = priorMetrics(messages);
     const metrics = currentMetrics.length > 0 ? currentMetrics : previousMetrics.length > 0 ? previousMetrics : ["total_population"];
     const notes = [];
     if (unsupported && currentMetrics.length > 0 && !onlyGenericMetric) {
@@ -439,27 +453,57 @@
     let operation = detectOperation(current);
     const limit = detectLimit(current);
     let geographies = detectGeographies(current, operation);
-    if (geographies.length === 0 && (isFollowUp(current) || /\b(first|second|third|fourth|last|former|latter)\b/.test(normalize(current)))) {
+    if (pendingCounty && slotFillState) {
+      operation = "value";
+      geographies = [{ level: "county", name: pendingCounty, state: slotFillState }];
+    }
+    if (geographies.length === 0) {
+      const residual = current.trim().replace(/^(what about|how about|and|also)\s+/i, "");
+      if (residual !== current.trim()) {
+        const placeGuess = unrecognizedPlaceGuess(residual);
+        if (placeGuess) {
+          return {
+            clarification: `I couldn't place "${placeGuess}" on its own. If it's a county, try "${placeGuess} County, <state>"; if a city, include the state (e.g. "${placeGuess}, California"). I can also do whole states and the US.`
+          };
+        }
+      }
+    }
+    const metricOnlyFollowUp = currentMetrics.length > 0 && geographies.length === 0;
+    if (geographies.length === 0 && (isFollowUp(current) || resolveOrdinal(current) !== void 0 || metricOnlyFollowUp)) {
       const ordinal = resolveOrdinal(current);
       if (ordinal !== void 0) {
         const prior = priorGeographies(messages);
         const picked = ordinal === -1 ? prior[prior.length - 1] : prior[ordinal];
-        if (picked) geographies = [picked];
+        if (picked) {
+          geographies = [picked];
+        } else if (prior.length > 0) {
+          return {
+            clarification: `I only have ${prior.length} place${prior.length === 1 ? "" : "s"} from before (${prior.map((geo) => geo.name).join(", ")}) \u2014 there's no item that far down. Which did you mean?`
+          };
+        }
       } else if (/\b(both|them|they|their|the two|these|those|all of them|all three|all four)\b/i.test(current)) {
         geographies = priorGeographies(messages);
       } else {
-        const inherited = priorGeography(messages);
-        if (inherited) geographies = [inherited];
+        const inherited = mostRecentGeographies(messages);
+        if (inherited.length === 1) {
+          geographies = inherited;
+        } else if (inherited.length >= 2) {
+          geographies = inherited;
+          if (operation === "value") operation = "compare";
+        }
       }
     }
-    if (/\b(higher|lower|greater|less|more|bigger|smaller|larger) than\b|\bcompared? (to|with)\b|\b(versus|vs\.?)\b/i.test(
+    if (/\b(higher|lower|greater|less|more|bigger|smaller|larger) than\b|\bcompared?\s+(?:it|that|this|these|those|them|both)?\s*(to|with)\b|\b(versus|vs\.?)\b/i.test(
       current
     )) {
       const concrete = geographies.filter((geo) => geo.name !== "*");
-      const prior = priorGeography(messages);
-      if (concrete.length === 1 && prior && prior.name.toLowerCase() !== concrete[0].name.toLowerCase()) {
-        operation = "compare";
-        geographies = [prior, concrete[0]];
+      if (concrete.length === 1) {
+        const plural = /\b(both|them|they|their|the two|these|those|all of them|all three|all four)\b/i.test(current);
+        const prior = (plural ? priorGeographies(messages) : [priorGeography(messages)]).filter((geo) => Boolean(geo)).filter((geo) => geo.name.toLowerCase() !== concrete[0].name.toLowerCase());
+        if (prior.length > 0) {
+          operation = "compare";
+          geographies = [...prior, concrete[0]];
+        }
       }
     }
     if (operation === "rank_top" || operation === "rank_bottom") {
@@ -486,6 +530,12 @@
       }
     }
     if (geographies.length === 0 && operation === "value") {
+      const guess = unrecognizedPlaceGuess(current);
+      if (guess) {
+        return {
+          clarification: `I couldn't place "${guess}" on its own. If it's a county, try "${guess} County, <state>"; if a city, include the state (e.g. "${guess}, California"). I can also do whole states and the US.`
+        };
+      }
       return {
         clarification: "Which US geography should I look up? I can answer for the whole US, a state, a county (with its state), or a city/place (with its state). I don't have regions, ZIP codes, or neighborhoods."
       };
@@ -505,29 +555,123 @@
       notes: notes.length > 0 ? notes : void 0
     };
   }
+  var ORDINAL_WORDS = {
+    first: 0,
+    former: 0,
+    second: 1,
+    third: 2,
+    fourth: 3,
+    fifth: 4,
+    sixth: 5,
+    seventh: 6,
+    eighth: 7,
+    ninth: 8,
+    tenth: 9
+  };
   function resolveOrdinal(text) {
     const normalized = normalize(text);
     if (/\b(last|latter|most recent)\b/.test(normalized)) return -1;
-    if (/\b(first|former)\b/.test(normalized)) return 0;
-    if (/\bsecond\b/.test(normalized)) return 1;
-    if (/\bthird\b/.test(normalized)) return 2;
-    if (/\bfourth\b/.test(normalized)) return 3;
+    for (const [word, index] of Object.entries(ORDINAL_WORDS)) {
+      if (new RegExp(`\\b${word}\\b`).test(normalized)) return index;
+    }
+    const digit = normalized.match(/\b(\d{1,2})(st|nd|rd|th)\b/);
+    if (digit) {
+      const value = Number(digit[1]);
+      return value >= 1 ? value - 1 : void 0;
+    }
     return void 0;
   }
-  function detectYear(text) {
-    const match = text.match(/\b(1[0-9]{3}|20[0-9]{2})\b/);
-    return match ? Number(match[0]) : void 0;
+  var ADDRESS_PREFIX_RE = /\b(district|route|highway|hwy|interstate|unit|apt|apartment|suite|ste|zip|box|number|no|block|precinct|ward|room|rm|floor|fl|hall|exit|sr)\.?\s*#?\s*$/i;
+  var STREET_SUFFIX_AFTER_RE = /^\s+([A-Z][a-z]+|st\b|street\b|ave\b|avenue\b|blvd\b|rd\b|road\b|dr\b|drive\b|ln\b|lane\b|way\b|ct\b|court\b|pl\b|place\b|pkwy\b|parkway\b|broadway\b|terrace\b|circle\b|cir\b)/;
+  var YEAR_CUE_BEFORE_RE = /\b(in|for|during|since|by|year|circa|as of|back in|between|from)\s*$/i;
+  function detectYears(text) {
+    const years = [];
+    const re = /\b(\d{4})(?:'?s)?\b/g;
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      const value = Number(match[1]);
+      const before = text.slice(0, match.index);
+      const after = text.slice(match.index + match[1].length);
+      if (YEAR_CUE_BEFORE_RE.test(before)) {
+        years.push(value);
+        continue;
+      }
+      if (ADDRESS_PREFIX_RE.test(before)) continue;
+      if (STREET_SUFFIX_AFTER_RE.test(after)) continue;
+      years.push(value);
+    }
+    return years;
   }
   function mentionsIncome(text) {
     const normalized = normalize(text);
-    return /\b(income|earnings|earn|earns|salary|salaries|wage|wages|wealthy|wealth|rich|affluent|how much do (people|they|residents) (make|earn))\b/.test(
+    if (!/\b(income|earnings|earn|earns|salary|salaries|wage|wages|wealthy|wealth|rich|affluent|how much do (people|they|residents) (make|earn))\b/.test(
       normalized
-    ) && !/\b(median|household|per capita|capita)\b/.test(normalized);
+    )) {
+      return false;
+    }
+    const resolved = detectMetrics(text);
+    return !resolved.includes("median_household_income") && !resolved.includes("per_capita_income");
+  }
+  var GREETING_RE = /^(good (morning|afternoon|evening|day)|hello+|howdy|hiya|hey+|hi+|yo|sup|greetings)( there| hey| hi| all| everyone| folks| y all)?/;
+  var ACK_RE = /^(ok(ay)?|cool|nice|great|awesome|perfect|sweet|alright|all right)?\s*(thanks|thank you|thank u|thx|ty|cheers|appreciate (it|that))( (so much|a lot|very much|a ton|a million|again|much|a bunch|for (the |all (the |your )?)?help|for your help|for helping( me)?|for all your help|for your time|that helps))*$/;
+  var META_RE = /^(how (are|r|s) (you|u|ya|it going)( doing)?( today)?|how is (it|everything|your day)( going)?|hows (it|everything|your day)( going)?|how have you been( doing| lately)?|how are things( going)?|what s up|whats up|(good|nice|great) to (meet|see) you|what can you (do|help( me)? with)|can you help( me)?|help( me| out)?|who are you|what are you|what do you do|how does this work|how do you work|menu|start)$/;
+  var STANDALONE_ACK_RE = /^(ok|okay|k|cool|nice|great|awesome|perfect|sweet|alright|all right|thanks|thank you|thank u|thx|ty|cheers|yes|yep|no|nope|sure|got it|sounds good|nvm|never mind|hm+|huh)$/;
+  function expandShorthand(n) {
+    return n.replace(/\bthanx\b|\bthnx\b|\bthankyou\b|\bthanku\b|\btysm\b|\bthx\b/g, "thanks").replace(/\bur\b/g, "your").replace(/\bu\b/g, "you").replace(/\br\b/g, "are");
+  }
+  function hasDataSignal(text) {
+    return detectYears(text).length > 0 || findStatesInText(text).length > 0 || findState(text.trim()) !== void 0 || /\b(population|people|residents|county|counties|city|cities|place|census|median|income|poverty|age|race|sex|gender|veteran|household|compare|rank|versus|vs|highest|lowest|largest|smallest|state|states)\b/.test(
+      text
+    );
+  }
+  function isSmalltalk(text) {
+    const n = expandShorthand(normalize(text));
+    if (!n) return false;
+    if (ACK_RE.test(n) || META_RE.test(n) || STANDALONE_ACK_RE.test(n)) return true;
+    const greeting = n.match(GREETING_RE);
+    if (greeting) {
+      const rest = n.slice(greeting[0].length).trim();
+      if (rest === "" || META_RE.test(rest) || ACK_RE.test(rest) || GREETING_RE.test(rest)) return true;
+      return !hasDataSignal(rest) && rest.split(" ").filter(Boolean).length <= 5;
+    }
+    return false;
+  }
+  function pendingAmbiguousCounty(messages) {
+    const users = userTurns(messages);
+    const prior = users[users.length - 2]?.content;
+    if (!prior) return void 0;
+    const county = detectGeographies(prior, detectOperation(prior)).find(
+      (geo) => geo.level === "county" && !geo.state && geo.name !== "*"
+    );
+    return county?.name;
+  }
+  function bareStateAnswer(text) {
+    const normalized = normalize(text);
+    if (!normalized) return void 0;
+    if (/\b(county|counties|city|cities|place|places)\b/.test(normalized)) return void 0;
+    if (detectMetrics(text).length > 0) return void 0;
+    const direct = findState(normalized);
+    if (direct) return direct.name;
+    const upper = text.match(/\b([A-Z]{2})\b/);
+    if (upper) {
+      const abbrState = findState(upper[1]);
+      if (abbrState) return abbrState.name;
+    }
+    if (normalized.split(" ").filter(Boolean).length > 8) return void 0;
+    const states = findStatesInText(text);
+    return states.length === 1 ? states[0].name : void 0;
+  }
+  function unrecognizedPlaceGuess(text) {
+    const trimmed = text.trim();
+    if (!/^[A-Z][A-Za-z']*( [A-Z][A-Za-z']*){0,2}$/.test(trimmed)) return void 0;
+    if (detectMetrics(text).length > 0) return void 0;
+    if (findState(trimmed) || findStatesInText(trimmed).length > 0) return void 0;
+    return trimmed;
   }
   var UNSUPPORTED_CONCEPTS = [
-    [/\bgdp\b|\bgross domestic product\b/, "GDP or economic output"],
+    [/\bgdp\b|\bgpd\b|\bgross domestic product\b|\beconomic (output|activity|growth)\b/, "GDP or economic output"],
     [/\b(crime|crimes)\b/, "crime statistics"],
-    [/\b(unemployment|employment|employed|jobs|labor force|workforce|occupation)\b/, "employment data"],
+    [/\b(?:un)?employ\w*\b|\bjobless\b|\bout of work\b|\bjobs?\b|\blabor force\b|\bworkforce\b|\boccupations?\b/, "employment data"],
     [/\b(housing|houses|homes|home value|home values|rent|rents|mortgage|homeowner|homeowners|homeownership|renter|renters)\b/, "housing data"],
     [/\b(education|school|schools|college|degree|degrees|graduate|graduates|bachelor|literacy|student|students|enrollment)\b/, "educational attainment"],
     [/\b(veteran|veterans|military)\b/, "veteran or military status"],
@@ -549,10 +693,45 @@
     [/\b(urban|rural|suburban) (population|residents|areas?)\b/, "urban/rural breakdowns"],
     [/\b(life expectancy|population density|\bdensity\b|religion|religious)\b/, "that measure"]
   ];
-  function unsupportedConcept(text) {
-    const normalized = normalize(text);
+  var FUZZY_UNSUPPORTED = [
+    [["veteran", "veterans", "military"], "veteran or military status"],
+    [["unemployment", "employment", "workforce", "occupation"], "employment data"],
+    [["households", "household", "families"], "household counts"],
+    [["crime", "crimes"], "crime statistics"],
+    [["mortgage", "homeowner", "homeowners", "homeownership"], "housing data"],
+    [["education", "college", "degree", "graduate", "literacy", "enrollment"], "educational attainment"],
+    [["disability", "disabilities", "disabled"], "disability data"],
+    [["marriage", "married", "divorce", "divorced", "marital"], "marital status"],
+    [["immigration", "immigrant", "citizenship", "naturalized"], "immigration or citizenship"],
+    [["insurance", "uninsured", "healthcare"], "health or insurance"],
+    [["commute", "commuting", "transit", "transportation"], "commuting or transportation"]
+  ];
+  function levenshtein(a, b) {
+    const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+    for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      }
+    }
+    return dp[a.length][b.length];
+  }
+  function unsupportedConcept(text, allowFuzzy = false) {
+    const collapsed = text.replace(/\bg[\s.]*d[\s.]*p\b/gi, "gdp");
+    const normalized = normalize(collapsed);
     for (const [pattern, label] of UNSUPPORTED_CONCEPTS) {
       if (pattern.test(normalized)) return label;
+    }
+    if (allowFuzzy) {
+      const tokens = normalized.split(" ").filter((token) => token.length >= 5);
+      for (const [keywords, label] of FUZZY_UNSUPPORTED) {
+        for (const token of tokens) {
+          for (const keyword of keywords) {
+            if (Math.abs(token.length - keyword.length) <= 1 && levenshtein(token, keyword) <= 1) return label;
+          }
+        }
+      }
     }
     return void 0;
   }
@@ -561,35 +740,99 @@
   }
   function isFollowUp(text) {
     const normalized = normalize(text);
-    return /\b(there|that|this|those|these|same|it|again|instead|here|them|they|their|both|the two|all of them|all three|all four)\b/.test(
+    return /\b(there|that|this|those|these|same|it|its|again|instead|here|them|they|their|both|the two|all of them|all three|all four)\b/.test(
       normalized
     ) || /^(what about|how about|and|also|what s|whats|ok|okay)\b/.test(normalized);
   }
   function userTurns(messages) {
     return messages.filter((message) => message.role === "user");
   }
-  function priorGeography(messages) {
+  function priorMetrics(messages) {
     const users = userTurns(messages);
     for (let i = users.length - 2; i >= 0; i--) {
-      const content = users[i].content;
-      const geographies = detectGeographies(content, detectOperation(content));
-      const concrete = geographies.find(
-        (geo) => geo.name !== "*" && !(geo.level === "county" && !geo.state)
-      );
-      if (concrete) return concrete;
+      const found = detectMetrics(users[i].content);
+      if (found.length > 0) return found;
     }
-    return void 0;
+    return [];
+  }
+  function baseGeographiesForTurn(users, i) {
+    const content = users[i].content;
+    if (i >= 1) {
+      const prev = users[i - 1].content;
+      const pendingCounty = detectGeographies(prev, detectOperation(prev)).find(
+        (geo) => geo.level === "county" && !geo.state && geo.name !== "*"
+      );
+      if (pendingCounty) {
+        const stateAnswer = bareStateAnswer(content);
+        if (stateAnswer) return [{ level: "county", name: pendingCounty.name, state: stateAnswer }];
+      }
+    }
+    return detectGeographies(content, detectOperation(content)).filter(
+      (geo) => geo.name !== "*" && !(geo.level === "county" && !geo.state)
+    );
+  }
+  function accumulateBaseGeographies(users, end) {
+    const collected = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (let i = end - 1; i >= 0; i--) {
+      const geos = baseGeographiesForTurn(users, i);
+      if (geos.length === 0) continue;
+      for (let j = geos.length - 1; j >= 0; j--) {
+        const key = `${geos[j].level}:${geos[j].name}:${geos[j].state ?? ""}`.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          collected.unshift(geos[j]);
+        }
+      }
+      if (geos.length >= 2) break;
+    }
+    return collected;
+  }
+  function geographiesForTurn(users, i) {
+    const base = baseGeographiesForTurn(users, i);
+    if (base.length > 0) return base;
+    const ordinal = resolveOrdinal(users[i].content);
+    if (ordinal !== void 0) {
+      const prior = accumulateBaseGeographies(users, i);
+      const picked = ordinal === -1 ? prior[prior.length - 1] : prior[ordinal];
+      if (picked) return [picked];
+    }
+    return [];
+  }
+  function mostRecentGeographies(messages) {
+    const users = userTurns(messages);
+    for (let i = users.length - 2; i >= 0; i--) {
+      const geos = geographiesForTurn(users, i);
+      if (geos.length > 0) return geos;
+    }
+    return [];
+  }
+  function priorGeography(messages) {
+    return mostRecentGeographies(messages)[0];
   }
   function priorGeographies(messages) {
     const users = userTurns(messages);
+    const collected = [];
+    const seen = /* @__PURE__ */ new Set();
+    const add = (geos) => {
+      for (let j = geos.length - 1; j >= 0; j--) {
+        const key = `${geos[j].level}:${geos[j].name}:${geos[j].state ?? ""}`.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          collected.unshift(geos[j]);
+        }
+      }
+    };
     for (let i = users.length - 2; i >= 0; i--) {
-      const content = users[i].content;
-      const concrete = detectGeographies(content, detectOperation(content)).filter(
-        (geo) => geo.name !== "*" && !(geo.level === "county" && !geo.state)
-      );
-      if (concrete.length > 0) return concrete;
+      const geos = geographiesForTurn(users, i);
+      if (geos.length === 0) continue;
+      if (geos.length >= 2) {
+        if (collected.length === 0) add(geos);
+        break;
+      }
+      add(geos);
     }
-    return [];
+    return collected;
   }
   var OVERVIEW_RE = /\b(everything|overview|demographics?|all (the )?(stats|statistics|data|metrics|numbers)|full (breakdown|profile|picture)|tell me all)\b/;
   var OVERVIEW_METRICS = [
@@ -603,16 +846,9 @@
   ];
   function detectMetrics(text) {
     const normalized = normalize(text);
-    if (OVERVIEW_RE.test(normalized)) return [...OVERVIEW_METRICS];
-    if (/\b(racial|race) (breakdown|composition|makeup|distribution|demographics)\b|\bdivers(e|ity)\b|\bby race\b/.test(normalized)) {
-      return ["white_population", "black_population", "asian_population", "hispanic_population"];
-    }
-    if (/\b(sex|gender) (ratio|breakdown|split|distribution|composition)\b/.test(normalized)) {
-      return ["male_population", "female_population"];
-    }
     const haystack = ` ${normalized} `;
     const matches = Object.entries(METRICS).filter(([, metric]) => metric.aliases.some((alias) => haystack.includes(` ${normalize(alias)} `))).map(([key]) => key);
-    const unique = [...new Set(matches)];
+    let unique = [...new Set(matches)];
     const populationSubtypes = [
       "male_population",
       "female_population",
@@ -623,7 +859,15 @@
     ];
     const hasSubtype = unique.some((metric) => populationSubtypes.includes(metric));
     if (unique.length > 1 && unique.includes("total_population") && hasSubtype && !haystack.includes(" total population ")) {
-      return unique.filter((metric) => metric !== "total_population");
+      unique = unique.filter((metric) => metric !== "total_population");
+    }
+    const merge = (bundle) => [...bundle, ...unique.filter((metric) => !bundle.includes(metric))];
+    if (OVERVIEW_RE.test(normalized)) return merge(OVERVIEW_METRICS);
+    if (/\b(racial|race) (breakdown|composition|makeup|distribution|demographics)\b|\bdivers(e|ity)\b|\bby race\b/.test(normalized)) {
+      return merge(["white_population", "black_population", "asian_population", "hispanic_population"]);
+    }
+    if (/\b(sex|gender) (ratio|breakdown|split|distribution|composition)\b/.test(normalized)) {
+      return merge(["male_population", "female_population"]);
     }
     return unique;
   }
@@ -641,7 +885,8 @@
     if (!match) return 5;
     return Math.min(Math.max(Number(match[1]), 1), 25);
   }
-  function detectGeographies(text, operation) {
+  function detectGeographies(rawText, operation) {
+    const text = stripNegatedStates(rawText);
     const normalized = normalize(text);
     const usPhrase = /\b(united states|usa|nationwide|national|countrywide|whole country|entire country|across the country)\b/i.test(text);
     const uppercaseUS = /\bU\.?S\.?A?\.?\b/.test(text);
@@ -661,7 +906,8 @@
     const county = text.match(/\b([A-Za-z .'-]+?)\s+County(?:,\s*([A-Za-z .'-]+))?/i);
     if (county) {
       const countyName = cleanCountyName(county[1]);
-      const state = county[2] ? findState(county[2])?.name : findStatesInText(text).at(0)?.name;
+      const conjunctionAfterCounty = /\bcounty\b[^.,?!]*\b(and|or|also|plus|versus|vs)\b/i.test(text);
+      const state = county[2] ? findState(county[2])?.name : conjunctionAfterCounty ? void 0 : findStatesInText(text).at(0)?.name;
       return [{ level: "county", name: titleCase(countyName), state }];
     }
     const place = text.match(/\b(?:city of|in|for|of)\s+([A-Za-z .'-]+?),\s*([A-Za-z .'-]+)\b/i);
@@ -685,7 +931,10 @@
     return value.toLowerCase().replace(/\b[a-z]/g, (char) => char.toUpperCase()).replace(/\bDc\b/g, "DC");
   }
   function cleanCountyName(value) {
-    return value.split(/\b(?:of|in|for|about|compare|versus|vs)\b/i).at(-1)?.replace(/\b(?:population|people|residents|median|income|poverty|rate|what|is|the)\b/gi, " ").replace(/\s+/g, " ").trim() || value.trim();
+    return value.split(/\b(?:of|in|for|about|compare|versus|vs)\b/i).at(-1)?.replace(
+      /\b(?:population|people|residents|median|income|poverty|rate|what|is|the|actually|no|yes|i|meant|mean|just|well|so|um|uh|oh|hmm|like|wait|sorry|please|looking|want|wanted|know|my|that|this)\b/gi,
+      " "
+    ).replace(/\s+/g, " ").trim() || value.trim();
   }
 
   // src/lib/context.ts
