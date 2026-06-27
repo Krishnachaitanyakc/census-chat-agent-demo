@@ -390,7 +390,7 @@
     const slotFillState = pendingCounty ? bareStateAnswer(current) : void 0;
     if (isSmalltalk(current) && !slotFillState) {
       return {
-        clarification: 'Hi! I answer questions about US population and demographics from the Census. Try "What is the population of California?", "Compare Texas and Florida by median age", or "Which states have the largest populations?"'
+        clarification: 'Hi! I answer questions about US population and demographics from the Census. Try "What is the population of California?", "Compare Texas and Florida by population", or "Which states have the largest populations?"'
       };
     }
     const years = detectYears(current);
