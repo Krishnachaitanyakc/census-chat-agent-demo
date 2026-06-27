@@ -458,14 +458,9 @@
       geographies = [{ level: "county", name: pendingCounty, state: slotFillState }];
     }
     if (geographies.length === 0) {
-      const residual = current.trim().replace(/^(what about|how about|and|also)\s+/i, "");
-      if (residual !== current.trim()) {
-        const placeGuess = unrecognizedPlaceGuess(residual);
-        if (placeGuess) {
-          return {
-            clarification: `I couldn't place "${placeGuess}" on its own. If it's a county, try "${placeGuess} County, <state>"; if a city, include the state (e.g. "${placeGuess}, California"). I can also do whole states and the US.`
-          };
-        }
+      const placeGuess = unrecognizedPlaceGuess(current);
+      if (placeGuess) {
+        return { clarification: placeNeedsStateMessage(placeGuess) };
       }
     }
     const metricOnlyFollowUp = currentMetrics.length > 0 && geographies.length === 0;
@@ -530,21 +525,13 @@
       }
     }
     if (geographies.length === 0 && operation === "value") {
-      const guess = unrecognizedPlaceGuess(current);
-      if (guess) {
-        return {
-          clarification: `I couldn't place "${guess}" on its own. If it's a county, try "${guess} County, <state>"; if a city, include the state (e.g. "${guess}, California"). I can also do whole states and the US.`
-        };
-      }
       return {
         clarification: "Which US geography should I look up? I can answer for the whole US, a state, a county (with its state), or a city/place (with its state). I don't have regions, ZIP codes, or neighborhoods."
       };
     }
-    const hasAmbiguousCounty = geographies.some((geo) => geo.level === "county" && !geo.state);
-    if (hasAmbiguousCounty) {
-      return {
-        clarification: "Please include the state for that county so I can resolve the Census geography unambiguously."
-      };
+    const ambiguousCounty = geographies.find((geo) => geo.level === "county" && !geo.state);
+    if (ambiguousCounty) {
+      return { clarification: countyNeedsStateMessage(ambiguousCounty.name) };
     }
     return {
       operation,
@@ -662,11 +649,20 @@
     return states.length === 1 ? states[0].name : void 0;
   }
   function unrecognizedPlaceGuess(text) {
-    const trimmed = text.trim();
-    if (!/^[A-Z][A-Za-z']*( [A-Z][A-Za-z']*){0,2}$/.test(trimmed)) return void 0;
-    if (detectMetrics(text).length > 0) return void 0;
-    if (findState(trimmed) || findStatesInText(trimmed).length > 0) return void 0;
-    return trimmed;
+    const stripped = text.replace(/[?.!,]/g, " ").replace(
+      /\b(what|whats|which|where|when|who|how|why|is|are|was|were|the|a|an|of|in|for|about|me|us|give|show|tell|find|get|list|please|many|much|do|does|i|want|wondering|looking|live|living|reside|residents|people|population|median|average|mean|income|earnings|poverty|rate|age|race|racial|sex|gender|demographic|demographics|number|count|total|whole|entire|compare|compared|versus|vs|rank|ranked|ranking|than|higher|lower|bigger|smaller|larger|greater|less|more|largest|smallest|biggest|highest|lowest|most|least|top|bottom)\b/gi,
+      " "
+    ).replace(/\s+/g, " ").trim();
+    if (!/^[A-Z][A-Za-z'.-]*( [A-Z][A-Za-z'.-]*){0,3}$/.test(stripped)) return void 0;
+    if (detectMetrics(stripped).length > 0) return void 0;
+    if (findState(stripped) || findStatesInText(stripped).length > 0) return void 0;
+    return stripped;
+  }
+  function placeNeedsStateMessage(name) {
+    return `I can look up "${name}" if you tell me which state it's in \u2014 Census county and city names aren't unique across states, so I need the state to find the right one. Try "${name} County, <state>" (county) or "${name}, <state>" (city). I work at the US, state, county, and city level \u2014 no regions or ZIP codes.`;
+  }
+  function countyNeedsStateMessage(name) {
+    return `Which state is ${name} County in? County names repeat across states, so I need the state to resolve the right one \u2014 e.g. "${name} County, California".`;
   }
   var UNSUPPORTED_CONCEPTS = [
     [/\bgdp\b|\bgpd\b|\bgross domestic product\b|\beconomic (output|activity|growth)\b/, "GDP or economic output"],
